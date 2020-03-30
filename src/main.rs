@@ -52,11 +52,103 @@ fn json_value_to_str(val: &Value) -> String {
         Value::String(s) => {
             format!("\"{}\"", s)
         }
-        Value::Array(_) => {
-            format!("array")
+        Value::Array(arr) => {
+            let arr: Vec<String> = arr.iter()
+                .map(|a|{json_value_to_str(&a)})
+                .collect();
+            format!("[{}]", arr.join(", "))
         }
-        Value::Object(_) => {
-            format!("object")
+        Value::Object(obj) => {
+            let obj: Vec<String> = obj.iter()
+                .map(|(k, v)|{
+                    format!("{}: {}", k, json_value_to_str(&v))
+                }).collect();
+            format!("{{{}}}", obj.join(", "))
+        }
+    }
+}
+
+fn resolve_path<'a>(v: &'a Value, path: &str) -> Option<&'a Value>{
+    match v{
+        Value::Object(map)=>{
+            let ind = path.find('.');
+            match ind {
+                Some(ind) => {
+                    // owner.access
+                    let (key1, key2) = path.split_at(ind);
+                    let (_, key2) = key2.split_at(1);
+                    match map.get(key1){
+                        Some(sub_json)=>{
+                            return resolve_path(sub_json, key2);
+                        }
+                        None => {
+                            println!("{} not found", key1);
+                            return None;
+                        }
+                    }
+                }
+                None => { // print id
+                    let path_ = map.get(path);
+                    match path_{
+                        Some(path) => Some(path),
+                        None => {
+                            println!("Key {} not found", path);
+                            None
+                        }
+                    }
+                }
+            }
+        }
+        Value::Array(arr)=>{
+            let ind = path.find('.');
+            match ind {
+                Some(ind) => {
+                    // owner.access.1.id
+                    let (key1, key2) = path.split_at(ind);
+                    let (_, key2) = key2.split_at(1);
+                    let key = key1.parse::<usize>();
+                    match key{
+                        Ok(key1)=>{
+                            match arr.get(key1){
+                                Some(sub_json)=>{
+                                    return resolve_path(sub_json, key2);
+                                }
+                                None => {
+                                    println!("index {} not found", key1);
+                                    return None;
+                                }
+                            }
+                        }
+                        _ => {
+                            println!("Expected {} to be an integer", key1);
+                            return None;
+                        }
+                    }
+                }
+                None => { // print id
+                    let path_ = path.parse::<usize>();
+                    match path_{
+                        Ok(path) => {
+                            match arr.get(path){
+                                Some(v) => Some(v),
+                                None => {
+                                    println!("index {} not found", path);
+                                    return None;
+                                }
+                            }
+                        }
+                        _ => {
+                            println!("Expected {} to be an integer", path);
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+        _ => {
+            // TODO implement further
+            println!("No object or array at evel {}", path);
+            return None;
         }
     }
 }
@@ -68,21 +160,13 @@ impl Command for PrintCommand{
 
         let (_, path) = args.split_at(6);
 
-        match &status.json {
-            Value::Object(map) => {
-                let value = map.get(path);
-                match value{
-                    Some(v) => {
-                        println!("{}", json_value_to_str(v));
-                    }
-                    None => {
-                        println!("Path {} not found", path);
-                    }
-                }
+        let value = resolve_path(&status.json, path);
+        match value{
+            Some(v) => {
+                println!("{}", json_value_to_str(v));
             }
-            _ => {
-                println!("JSON type is unsupported");
-                println!("HINT: Expecting object at top level");
+            None => {
+                //println!("Path {} not found", path);
             }
         }
     }
@@ -90,12 +174,41 @@ impl Command for PrintCommand{
     fn complete(&self, line: &str, pos: usize, _ctx: &Context<'_>, status: &Status
     ) -> Result<(usize, Vec<Pair>), ReadlineError> {
 
-        let (_, line) = line.split_at(6);
+        let (_, mut line) = line.split_at(6);
 
-        let pos = pos - 6;
+        let mut pos = pos - 6;
 
+        let mut v = &status.json;
 
-        match &status.json{
+        let mut replace_index = 6;
+
+        // print owner.ac
+        let dot_pos = line.rfind('.');
+
+        if dot_pos.is_some(){
+            let dot_pos = dot_pos.unwrap();
+
+            pos -= dot_pos + 1;
+            replace_index += dot_pos + 1;
+
+            let (path, mut extra) = line.split_at(dot_pos);
+
+            extra = if extra.len() > 1 { extra.split_at(1).1} else { extra };
+
+            line = extra;
+
+            let tmp = resolve_path(v, path);
+
+            if tmp.is_some() {
+                v = tmp.unwrap();
+            } else {
+                return Ok((0, vec![]));
+            }
+        }
+
+        // println!("{:?}", &line[..pos]);
+
+        match v{
             Value::Object(map) => {
                 let m = map.keys().filter_map(|key|{
                     if key.starts_with(&line[..pos]){
@@ -109,10 +222,20 @@ impl Command for PrintCommand{
                     }
                 }).collect();
 
-                return Ok((6, m));
+                return Ok((replace_index, m));
+            }
+            Value::Array(arr) => {
+                let m = (0 .. arr.len())
+                    .map(|ind|{
+                        return Pair{
+                            display: format!("{}", ind),
+                            replacement: format!("{}", ind,)
+                        };
+                    }).collect();
+                return Ok((replace_index, m));
             }
             _ => {
-                return Ok((6, vec![]))
+                return Ok((replace_index, vec![]))
             }
         }
     }
